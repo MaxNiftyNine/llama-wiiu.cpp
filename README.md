@@ -1,6 +1,7 @@
 # llama-wiiu.cpp
 
 This is just a quick little vibe-coded project I made.
+The model I tested with was 'qwen2.5-0.5b-instruct-q4_0.gguf'
 Currently the prompt has to be hardcoded before building.
 ```
 ### Instruction
