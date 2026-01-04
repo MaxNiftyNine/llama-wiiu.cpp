@@ -1,9 +1,18 @@
-define newline
+DEVKITPRO ?= /opt/devkitpro
+WIIU_CMAKE ?= $(DEVKITPRO)/portlibs/wiiu/bin/powerpc-eabi-cmake
+BUILD_DIR ?= build-wiiu
 
+.PHONY: all configure build clean
 
-endef
+all: build
 
-$(error Build system changed:$(newline)\
-The Makefile build has been replaced by CMake.$(newline)$(newline)\
-For build instructions see:$(newline)\
-https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md$(newline)${newline})
+configure:
+	@$(WIIU_CMAKE) -S . -B $(BUILD_DIR) \
+		-DCMAKE_TOOLCHAIN_FILE=$(DEVKITPRO)/cmake/WiiU.cmake \
+		-DCMAKE_BUILD_TYPE=Release
+
+build: configure
+	@$(WIIU_CMAKE) --build $(BUILD_DIR)
+
+clean:
+	@rm -rf $(BUILD_DIR)

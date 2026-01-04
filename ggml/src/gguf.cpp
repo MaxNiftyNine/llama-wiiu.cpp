@@ -218,12 +218,58 @@ struct gguf_context {
 
 struct gguf_reader {
     FILE * file;
+    static constexpr bool k_is_little_endian = (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
 
     gguf_reader(FILE * file) : file(file) {}
 
+    template<typename T>
+    static T le_to_host(T v) {
+        if constexpr (sizeof(T) == 1) {
+            return v;
+        } else if constexpr (sizeof(T) == 2) {
+            if (!k_is_little_endian) v = __builtin_bswap16(v);
+        } else if constexpr (sizeof(T) == 4) {
+            if (!k_is_little_endian) v = __builtin_bswap32(v);
+        } else if constexpr (sizeof(T) == 8) {
+            if (!k_is_little_endian) v = __builtin_bswap64(v);
+        }
+        return v;
+    }
+
+    static float le_to_host(float v) {
+        if (k_is_little_endian) return v;
+        uint32_t u;
+        memcpy(&u, &v, sizeof(u));
+        u = __builtin_bswap32(u);
+        memcpy(&v, &u, sizeof(v));
+        return v;
+    }
+
+    static double le_to_host(double v) {
+        if (k_is_little_endian) return v;
+        uint64_t u;
+        memcpy(&u, &v, sizeof(u));
+        u = __builtin_bswap64(u);
+        memcpy(&v, &u, sizeof(v));
+        return v;
+    }
+
     template <typename T>
     bool read(T & dst) const {
-        return fread(&dst, 1, sizeof(dst), file) == sizeof(dst);
+        T tmp;
+        if (fread(&tmp, 1, sizeof(tmp), file) != sizeof(tmp)) {
+            return false;
+        }
+        if constexpr (std::is_floating_point<T>::value) {
+            if constexpr (sizeof(T) == sizeof(float)) {
+                dst = le_to_host(static_cast<float>(tmp));
+            } else {
+                dst = le_to_host(static_cast<double>(tmp));
+            }
+        } else {
+            dst = le_to_host(tmp);
+        }
+        return true;
     }
 
     template <typename T>

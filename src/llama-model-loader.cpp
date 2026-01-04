@@ -1,6 +1,7 @@
 #include "llama-model-loader.h"
 
 #include "ggml.h"
+#include "../ggml/src/ggml-quants.h"
 
 #include <array>
 #include <cinttypes>
@@ -10,6 +11,332 @@
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
 static const size_t GiB = 1024*MiB;
+
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+// GGUF tensors are stored little-endian; swap into host order on big-endian targets.
+static inline void be_swap16(uint16_t & v) { v = __builtin_bswap16(v); }
+static inline void be_swap32(uint32_t & v) { v = __builtin_bswap32(v); }
+static inline void be_swap64(uint64_t & v) { v = __builtin_bswap64(v); }
+
+static inline void be_swap_half(ggml_half & v) {
+    be_swap16(reinterpret_cast<uint16_t &>(v));
+}
+
+static inline void be_swap_f32(float & v) {
+    auto & u = reinterpret_cast<uint32_t &>(v);
+    be_swap32(u);
+}
+
+static inline void be_swap_f64(double & v) {
+    auto & u = reinterpret_cast<uint64_t &>(v);
+    be_swap64(u);
+}
+
+static inline void be_swap_block(block_q4_0 & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q4_1 & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.m);
+}
+
+static inline void be_swap_block(block_q5_0 & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q5_1 & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.m);
+}
+
+static inline void be_swap_block(block_q8_0 & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q8_1 & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.s);
+}
+
+static inline void be_swap_block(block_tq1_0 & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_tq2_0 & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q2_K & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.dmin);
+}
+
+static inline void be_swap_block(block_q3_K & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q4_K & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.dmin);
+}
+
+static inline void be_swap_block(block_q5_K & b) {
+    be_swap_half(b.d);
+    be_swap_half(b.dmin);
+}
+
+static inline void be_swap_block(block_q6_K & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_q8_K & b) {
+    be_swap_f32(b.d);
+    for (auto & bs : b.bsums) {
+        be_swap16(reinterpret_cast<uint16_t &>(bs));
+    }
+}
+
+static inline void be_swap_block(block_iq2_xxs & b) {
+    be_swap_half(b.d);
+    for (auto & q : b.qs) {
+        be_swap16(q);
+    }
+}
+
+static inline void be_swap_block(block_iq2_xs & b) {
+    be_swap_half(b.d);
+    for (auto & q : b.qs) {
+        be_swap16(q);
+    }
+}
+
+static inline void be_swap_block(block_iq3_xxs & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_iq1_s & b) {
+    be_swap_half(b.d);
+    for (auto & h : b.qh) {
+        be_swap16(h);
+    }
+}
+
+static inline void be_swap_block(block_iq4_nl & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_iq3_s & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_iq2_s & b) {
+    be_swap_half(b.d);
+}
+
+static inline void be_swap_block(block_iq4_xs & b) {
+    be_swap_half(b.d);
+    be_swap16(b.scales_h);
+}
+
+static inline size_t be_element_size(enum ggml_type type) {
+    return ggml_type_size(type);
+}
+
+static void ggml_be_swap_tensor_data(enum ggml_type type, void * data, size_t nbytes) {
+    if (!data || nbytes == 0) {
+        return;
+    }
+    const size_t ts = be_element_size(type);
+    if (ts == 0 || nbytes % ts != 0) {
+        return;
+    }
+
+    switch (type) {
+        case GGML_TYPE_F16: {
+            auto * v = reinterpret_cast<ggml_half *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(ggml_half); i < n; ++i) {
+                be_swap_half(v[i]);
+            }
+        } break;
+        case GGML_TYPE_BF16: {
+            auto * v = reinterpret_cast<uint16_t *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(uint16_t); i < n; ++i) {
+                be_swap16(v[i]);
+            }
+        } break;
+        case GGML_TYPE_F32: {
+            auto * v = reinterpret_cast<float *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(float); i < n; ++i) {
+                be_swap_f32(v[i]);
+            }
+        } break;
+        case GGML_TYPE_F64: {
+            auto * v = reinterpret_cast<double *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(double); i < n; ++i) {
+                be_swap_f64(v[i]);
+            }
+        } break;
+        case GGML_TYPE_I16: {
+            auto * v = reinterpret_cast<uint16_t *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(uint16_t); i < n; ++i) {
+                be_swap16(v[i]);
+            }
+        } break;
+        case GGML_TYPE_I32: {
+            auto * v = reinterpret_cast<uint32_t *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(uint32_t); i < n; ++i) {
+                be_swap32(v[i]);
+            }
+        } break;
+        case GGML_TYPE_I64: {
+            auto * v = reinterpret_cast<uint64_t *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(uint64_t); i < n; ++i) {
+                be_swap64(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q4_0: {
+            auto * v = reinterpret_cast<block_q4_0 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q4_0); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q4_1: {
+            auto * v = reinterpret_cast<block_q4_1 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q4_1); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q5_0: {
+            auto * v = reinterpret_cast<block_q5_0 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q5_0); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q5_1: {
+            auto * v = reinterpret_cast<block_q5_1 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q5_1); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q8_0: {
+            auto * v = reinterpret_cast<block_q8_0 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q8_0); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q8_1: {
+            auto * v = reinterpret_cast<block_q8_1 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q8_1); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q2_K: {
+            auto * v = reinterpret_cast<block_q2_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q2_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q3_K: {
+            auto * v = reinterpret_cast<block_q3_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q3_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q4_K: {
+            auto * v = reinterpret_cast<block_q4_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q4_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q5_K: {
+            auto * v = reinterpret_cast<block_q5_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q5_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q6_K: {
+            auto * v = reinterpret_cast<block_q6_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q6_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_Q8_K: {
+            auto * v = reinterpret_cast<block_q8_K *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_q8_K); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ2_XXS: {
+            auto * v = reinterpret_cast<block_iq2_xxs *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq2_xxs); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ2_XS: {
+            auto * v = reinterpret_cast<block_iq2_xs *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq2_xs); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ3_XXS: {
+            auto * v = reinterpret_cast<block_iq3_xxs *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq3_xxs); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ1_S: {
+            auto * v = reinterpret_cast<block_iq1_s *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq1_s); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ4_NL: {
+            auto * v = reinterpret_cast<block_iq4_nl *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq4_nl); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ3_S: {
+            auto * v = reinterpret_cast<block_iq3_s *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq3_s); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ2_S: {
+            auto * v = reinterpret_cast<block_iq2_s *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq2_s); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_IQ4_XS: {
+            auto * v = reinterpret_cast<block_iq4_xs *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_iq4_xs); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_TQ1_0: {
+            auto * v = reinterpret_cast<block_tq1_0 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_tq1_0); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_TQ2_0: {
+            auto * v = reinterpret_cast<block_tq2_0 *>(data);
+            for (size_t i = 0, n = nbytes / sizeof(block_tq2_0); i < n; ++i) {
+                be_swap_block(v[i]);
+            }
+        } break;
+        case GGML_TYPE_I8:
+        case GGML_TYPE_IQ1_M:
+        case GGML_TYPE_MXFP4:
+        default:
+            break;
+    }
+}
+#else
+static void ggml_be_swap_tensor_data(enum ggml_type, void *, size_t) {}
+#endif
 
 const char * llama_file_version_name(llama_fver version) {
     switch (version) {
@@ -738,6 +1065,13 @@ llama_model_loader::llama_model_loader(
         use_mmap = false;
     }
 
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    if (use_mmap) {
+        LLAMA_LOG_WARN("%s: disabling mmap on big-endian host (GGUF tensors are little-endian)", __func__);
+        use_mmap = false;
+    }
+#endif
+
     this->use_mmap = use_mmap;
     this->check_tensors = check_tensors;
     this->no_alloc = no_alloc;
@@ -937,6 +1271,7 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
         const auto & file = files.at(w.idx);
         file->seek(w.offs, SEEK_SET);
         file->read_raw(cur->data, ggml_nbytes(cur));
+        ggml_be_swap_tensor_data(cur->type, cur->data, ggml_nbytes(cur));
     }
 
     if (check_tensors && !ggml_validate_row_data(cur->type, cur->data, ggml_nbytes(cur))) {
@@ -1101,6 +1436,7 @@ bool llama_model_loader::load_all_data(
 
             if (ggml_backend_buffer_is_host(cur->buffer)) {
                 file->read_raw_at(cur->data, n_size, weight->offs);
+                ggml_be_swap_tensor_data(cur->type, cur->data, n_size);
                 if (check_tensors) {
                     validation_result.emplace_back(std::async(std::launch::async, [cur, n_size] {
                         return std::make_pair(cur, ggml_validate_row_data(cur->type, cur->data, n_size));
@@ -1163,6 +1499,7 @@ bool llama_model_loader::load_all_data(
                 } else {
                     read_buf.resize(n_size);
                     file->read_raw_at(read_buf.data(), n_size, weight->offs);
+                    ggml_be_swap_tensor_data(cur->type, read_buf.data(), n_size);
                     ggml_backend_tensor_set(cur, read_buf.data(), 0, n_size);
                     if (check_tensors && !ggml_validate_row_data(cur->type, read_buf.data(), n_size)) {
                         throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));

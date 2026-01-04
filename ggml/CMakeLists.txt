@@ -278,7 +278,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
-find_package(Threads REQUIRED)
+if (CMAKE_SYSTEM_NAME STREQUAL "CafeOS")
+    # DevkitPro's CafeOS toolchain does not ship a pthread library. We provide
+    # our own lightweight thread wrappers in code, so expose an empty Threads
+    # target to satisfy CMake dependencies without probing the system.
+    add_library(Threads::Threads INTERFACE IMPORTED)
+
+    set(GGML_WIIU_THREAD_STACK_SIZE "262144" CACHE STRING "ggml: stack size used for CafeOS worker threads (bytes)")
+    set(GGML_WIIU_THREAD_PRIORITY   "16"     CACHE STRING "ggml: thread priority used for CafeOS worker threads")
+
+    add_compile_definitions(
+        GGML_WIIU_THREAD_STACK_SIZE=${GGML_WIIU_THREAD_STACK_SIZE}
+        GGML_WIIU_THREAD_PRIORITY=${GGML_WIIU_THREAD_PRIORITY}
+    )
+else()
+    find_package(Threads REQUIRED)
+endif()
 
 include(GNUInstallDirs)
 

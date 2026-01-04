@@ -1,293 +1,71 @@
-cmake_minimum_required(VERSION 3.14) # for add_link_options and implicit target directories.
+cmake_minimum_required(VERSION 3.16)
 project("llama.cpp" C CXX)
-include(CheckIncludeFileCXX)
 
-#set(CMAKE_WARN_DEPRECATED YES)
-set(CMAKE_WARN_UNUSED_CLI YES)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
-endif()
-
-message("CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
-
-# Add path to modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
-if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(LLAMA_STANDALONE ON)
+# Force release-style codegen with PowerPC 750 tuning/LTO for Wii U
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+set(CMAKE_C_FLAGS_RELEASE   "-O3 -DNDEBUG -mcpu=750 -mtune=750 -flto" CACHE STRING "C flags for Release" FORCE)
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=750 -mtune=750 -flto" CACHE STRING "CXX flags for Release" FORCE)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "Enable LTO" FORCE)
 
-    include(git-vars)
-
-    # configure project version
-    # TODO
-else()
-    set(LLAMA_STANDALONE OFF)
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "CafeOS")
+    message(FATAL_ERROR "This tree only supports Wii U (CafeOS) builds.")
 endif()
 
-option(LLAMA_USE_SYSTEM_GGML "Use system libggml" OFF)
-
-option(LLAMA_WASM_MEM64 "llama: use 64-bit memory in WASM builds" ON)
-
-if (EMSCRIPTEN)
-    set(BUILD_SHARED_LIBS_DEFAULT OFF)
-
-    # Use 64-bit memory to support backend_get_memory queries
-    # TODO: analyze performance impact, see https://spidermonkey.dev/blog/2025/01/15/is-memory64-actually-worth-using
-    if (LLAMA_WASM_MEM64)
-      add_compile_options("-sMEMORY64=1")
-      add_link_options("-sMEMORY64=1")
-    endif()
-    add_link_options("-sALLOW_MEMORY_GROWTH=1")
-
-    option(LLAMA_WASM_SINGLE_FILE "llama: embed WASM inside the generated llama.js" OFF)
-    option(LLAMA_BUILD_HTML "llama: build HTML file" ON)
-    if (LLAMA_BUILD_HTML)
-        set(CMAKE_EXECUTABLE_SUFFIX ".html")
-    endif()
-else()
-    if (MINGW)
-        set(BUILD_SHARED_LIBS_DEFAULT OFF)
-    else()
-        set(BUILD_SHARED_LIBS_DEFAULT ON)
-    endif()
-endif()
-
-option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
-
-if (WIN32)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-endif()
-
-if (MSVC)
-    add_compile_options("$<$<COMPILE_LANGUAGE:C>:/utf-8>")
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/utf-8>")
-    add_compile_options("$<$<COMPILE_LANGUAGE:C>:/bigobj>")
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/bigobj>")
-endif()
-
-if (LLAMA_STANDALONE)
-    # enable parallel builds for msbuild
-    list(APPEND CMAKE_VS_GLOBALS UseMultiToolTask=true)
-    list(APPEND CMAKE_VS_GLOBALS EnforceProcessCountAcrossBuilds=true)
-endif()
-
-if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(LLAMA_TOOLS_INSTALL_DEFAULT OFF)
-else()
-    set(LLAMA_TOOLS_INSTALL_DEFAULT ${LLAMA_STANDALONE})
-endif()
-
-#
-# option list
-#
-
-# debug
-option(LLAMA_ALL_WARNINGS           "llama: enable all compiler warnings"                   ON)
-option(LLAMA_ALL_WARNINGS_3RD_PARTY "llama: enable all compiler warnings in 3rd party libs" OFF)
-
-# build
-option(LLAMA_FATAL_WARNINGS "llama: enable -Werror flag" OFF)
-
-# sanitizers
-option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    OFF)
-option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   OFF)
-option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" OFF)
-
-# utils
-option(LLAMA_BUILD_COMMON "llama: build common utils library" ${LLAMA_STANDALONE})
-
-# extra artifacts
-option(LLAMA_BUILD_TESTS    "llama: build tests"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_TOOLS    "llama: build tools"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_EXAMPLES "llama: build examples"       ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
-option(LLAMA_TOOLS_INSTALL  "llama: install tools"        ${LLAMA_TOOLS_INSTALL_DEFAULT})
-
-# 3rd party libs
-option(LLAMA_CURL       "llama: use libcurl to download model from an URL" ON)
-option(LLAMA_HTTPLIB    "llama: if libcurl is disabled, use httplib to download model from an URL" ON)
-option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" OFF)
-option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
-
-# Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/common.cmake)
 
-if (NOT DEFINED LLAMA_BUILD_NUMBER)
-    set(LLAMA_BUILD_NUMBER        ${BUILD_NUMBER})
-endif()
-if (NOT DEFINED LLAMA_BUILD_COMMIT)
-    set(LLAMA_BUILD_COMMIT        ${BUILD_COMMIT})
-endif()
+set(LLAMA_ALL_WARNINGS ON CACHE BOOL "llama: enable all compiler warnings" FORCE)
+set(LLAMA_FATAL_WARNINGS OFF CACHE BOOL "llama: enable -Werror flag" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+
+set(LLAMA_BUILD_NUMBER ${BUILD_NUMBER})
+set(LLAMA_BUILD_COMMIT ${BUILD_COMMIT})
 set(LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER})
 
-# override ggml options
-set(GGML_ALL_WARNINGS   ${LLAMA_ALL_WARNINGS})
-set(GGML_FATAL_WARNINGS ${LLAMA_FATAL_WARNINGS})
+# ggml is still built from source, but every non-Wii U backend is disabled
+set(GGML_ALL_WARNINGS ${LLAMA_ALL_WARNINGS} CACHE BOOL "" FORCE)
+set(GGML_FATAL_WARNINGS ${LLAMA_FATAL_WARNINGS} CACHE BOOL "" FORCE)
+set(GGML_BUILD_NUMBER ${LLAMA_BUILD_NUMBER})
+set(GGML_BUILD_COMMIT ${LLAMA_BUILD_COMMIT})
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_POWERPC_CPUTYPE 750 CACHE STRING "ggml: CPU type for PowerPC" FORCE)
+set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
+set(GGML_ACCELERATE OFF CACHE BOOL "" FORCE)
+set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+set(GGML_MUSA OFF CACHE BOOL "" FORCE)
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+set(GGML_KOMPUTE OFF CACHE BOOL "" FORCE)
+set(GGML_SYCL OFF CACHE BOOL "" FORCE)
+set(GGML_RPC OFF CACHE BOOL "" FORCE)
+set(GGML_MPI OFF CACHE BOOL "" FORCE)
+set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+set(GGML_LLAMAFILE OFF CACHE BOOL "" FORCE)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_HBM OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_REPACK ON CACHE BOOL "" FORCE)
 
-# change the default for these ggml options
-if (NOT DEFINED GGML_LLAMAFILE)
-    set(GGML_LLAMAFILE_DEFAULT ON)
-endif()
-
-if (NOT DEFINED GGML_CUDA_GRAPHS)
-    set(GGML_CUDA_GRAPHS_DEFAULT ON)
-endif()
-
-# transition helpers
-function (llama_option_depr TYPE OLD NEW)
-    if (${OLD})
-        message(${TYPE} "${OLD} is deprecated and will be removed in the future.\nUse ${NEW} instead\n")
-        set(${NEW} ON PARENT_SCOPE)
-    endif()
-endfunction()
-
-llama_option_depr(FATAL_ERROR LLAMA_CUBLAS              GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_CUDA                GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_METAL               GGML_METAL)
-llama_option_depr(WARNING     LLAMA_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
-llama_option_depr(WARNING     LLAMA_NATIVE              GGML_NATIVE)
-llama_option_depr(WARNING     LLAMA_RPC                 GGML_RPC)
-llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
-llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
-llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
-
-if (NOT MSVC)
-    if (LLAMA_SANITIZE_THREAD)
-        message(STATUS "Using -fsanitize=thread")
-
-        add_compile_options(-fsanitize=thread)
-        link_libraries     (-fsanitize=thread)
-    endif()
-
-    if (LLAMA_SANITIZE_ADDRESS)
-        message(STATUS "Using -fsanitize=address")
-
-        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
-        link_libraries     (-fsanitize=address)
-    endif()
-
-    if (LLAMA_SANITIZE_UNDEFINED)
-        message(STATUS "Using -fsanitize=undefined")
-
-        add_compile_options(-fsanitize=undefined)
-        link_libraries     (-fsanitize=undefined)
-    endif()
-endif()
-
-#
-# 3rd-party
-#
-
-if (LLAMA_USE_SYSTEM_GGML)
-    message(STATUS "Using system-provided libggml, skipping ggml build")
-    find_package(ggml REQUIRED)
-    add_library(ggml ALIAS ggml::ggml)
-endif()
-
-if (NOT TARGET ggml AND NOT LLAMA_USE_SYSTEM_GGML)
-    set(GGML_BUILD_NUMBER ${LLAMA_BUILD_NUMBER})
-    set(GGML_BUILD_COMMIT ${LLAMA_BUILD_COMMIT})
-    add_subdirectory(ggml)
-    # ... otherwise assume ggml is added by a parent CMakeLists.txt
-endif()
-
-#
-# build the library
-#
-
+add_subdirectory(ggml)
 add_subdirectory(src)
 
-#
-# utils, programs, examples and tests
-#
+add_executable(llama-wiiu wiiu/main.cpp wiiu/wut_shims.c)
+target_sources(llama-wiiu PRIVATE ggml/src/ggml-cpu/ggml-cpu.cpp)
+target_include_directories(llama-wiiu PRIVATE ggml/src ggml/src/ggml-cpu)
+target_link_libraries(llama-wiiu PRIVATE llama ggml ggml-cpu ggml-base)
+wut_create_rpx(llama-wiiu)
 
-if (NOT LLAMA_BUILD_COMMON)
-    message(STATUS "LLAMA_BUILD_COMMON is OFF, disabling LLAMA_CURL")
-    set(LLAMA_CURL OFF)
-endif()
-
-if (LLAMA_BUILD_COMMON)
-    add_subdirectory(common)
-    if (LLAMA_HTTPLIB)
-        add_subdirectory(vendor/cpp-httplib)
-    endif()
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
-    include(CTest)
-    add_subdirectory(tests)
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_EXAMPLES)
-    add_subdirectory(examples)
-    add_subdirectory(pocs)
-endif()
-
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS)
-    add_subdirectory(tools)
-endif()
-
-#
-# install
-#
-
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-
-set(LLAMA_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
-set(LLAMA_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
-set(LLAMA_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
-
-set(LLAMA_PUBLIC_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/llama.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/llama-cpp.h)
-
-set_target_properties(llama
-    PROPERTIES
-        PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
-
-install(TARGETS llama LIBRARY PUBLIC_HEADER)
-
-configure_package_config_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/llama-config.cmake.in
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama
-    PATH_VARS LLAMA_INCLUDE_INSTALL_DIR
-              LLAMA_LIB_INSTALL_DIR
-              LLAMA_BIN_INSTALL_DIR )
-
-write_basic_package_version_file(
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-    VERSION ${LLAMA_INSTALL_VERSION}
-    COMPATIBILITY SameMajorVersion)
-
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-              ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama)
-
-install(
-    FILES convert_hf_to_gguf.py
-    PERMISSIONS
-        OWNER_READ
-        OWNER_WRITE
-        OWNER_EXECUTE
-        GROUP_READ
-        GROUP_EXECUTE
-        WORLD_READ
-        WORLD_EXECUTE
-    DESTINATION ${CMAKE_INSTALL_BINDIR})
-
-configure_file(cmake/llama.pc.in
-        "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
-        @ONLY)
-
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+set(WIIU_WUHB_OUTPUT "${CMAKE_BINARY_DIR}/llama-wiiu.wuhb")
+wut_create_wuhb(llama-wiiu-wuhb
+    TARGET llama-wiiu
+    OUTPUT ${WIIU_WUHB_OUTPUT}
+    NAME "llama.cpp"
+    SHORTNAME "llama"
+    AUTHOR "ggml-org")

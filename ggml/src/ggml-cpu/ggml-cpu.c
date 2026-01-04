@@ -173,6 +173,201 @@ static int sched_yield (void) {
     Sleep (0);
     return 0;
 }
+#elif defined(__WIIU__)
+
+#include <coreinit/condition.h>
+#include <coreinit/mutex.h>
+#include <coreinit/thread.h>
+#include <errno.h>
+#include <malloc.h>
+#include <stdint.h>
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifndef GGML_WIIU_THREAD_STACK_SIZE
+#define GGML_WIIU_THREAD_STACK_SIZE (256 * 1024)
+#endif
+
+#ifndef GGML_WIIU_THREAD_PRIORITY
+#define GGML_WIIU_THREAD_PRIORITY 16
+#endif
+
+typedef void * thread_ret_t;
+
+struct ggml_wiiu_thread_ctx {
+    thread_ret_t (*func)(void *);
+    void * arg;
+};
+
+struct ggml_wiiu_thread {
+    OSThread thread;
+    void * stack;
+    struct ggml_wiiu_thread_ctx ctx;
+};
+
+struct ggml_wiiu_mutex {
+    OSMutex mutex;
+};
+
+struct ggml_wiiu_cond {
+    OSCondition cond;
+};
+
+static int ggml_wiiu_thread_entry(int argc, const char ** argv) {
+    (void) argc;
+
+    struct ggml_wiiu_thread_ctx * ctx = (struct ggml_wiiu_thread_ctx *) argv;
+    thread_ret_t ret = ctx->func(ctx->arg);
+    return (int) (intptr_t) ret;
+}
+
+static int pthread_create(pthread_t * out, const pthread_attr_t * unused, thread_ret_t (*func)(void *), void * arg) {
+    (void) unused;
+
+    struct ggml_wiiu_thread * thr = malloc(sizeof(*thr));
+    if (thr == NULL) {
+        return ENOMEM;
+    }
+
+    memset(thr, 0, sizeof(*thr));
+    thr->stack = memalign(0x40, GGML_WIIU_THREAD_STACK_SIZE);
+    if (thr->stack == NULL) {
+        free(thr);
+        return ENOMEM;
+    }
+
+    thr->ctx.func = func;
+    thr->ctx.arg  = arg;
+
+    if (!OSCreateThread(&thr->thread,
+                        ggml_wiiu_thread_entry,
+                        0,
+                        (char *) &thr->ctx,
+                        (uint8_t *) thr->stack + GGML_WIIU_THREAD_STACK_SIZE,
+                        GGML_WIIU_THREAD_STACK_SIZE,
+                        GGML_WIIU_THREAD_PRIORITY,
+                        OS_THREAD_ATTRIB_AFFINITY_ANY)) {
+        free(thr->stack);
+        free(thr);
+        return EAGAIN;
+    }
+
+    OSResumeThread(&thr->thread);
+    *out = (pthread_t) (uintptr_t) thr;
+    return 0;
+}
+
+static int pthread_join(pthread_t thread, void * unused) {
+    (void) unused;
+
+    struct ggml_wiiu_thread * thr = (struct ggml_wiiu_thread *) (uintptr_t) thread;
+    if (thr == NULL) {
+        return EINVAL;
+    }
+
+    int thread_result = 0;
+    OSJoinThread(&thr->thread, &thread_result);
+
+    free(thr->stack);
+    free(thr);
+    return 0;
+}
+
+static int pthread_mutex_init(pthread_mutex_t * mutex, const void * attr) {
+    (void) attr;
+
+    struct ggml_wiiu_mutex * wrap = malloc(sizeof(*wrap));
+    if (wrap == NULL) {
+        return ENOMEM;
+    }
+
+    memset(wrap, 0, sizeof(*wrap));
+    OSInitMutex(&wrap->mutex);
+
+    *mutex = (pthread_mutex_t) (uintptr_t) wrap;
+    return 0;
+}
+
+static int pthread_mutex_destroy(pthread_mutex_t * mutex) {
+    struct ggml_wiiu_mutex * wrap = (struct ggml_wiiu_mutex *) (uintptr_t) *mutex;
+    if (wrap) {
+        free(wrap);
+        *mutex = 0;
+    }
+    return 0;
+}
+
+static int pthread_mutex_lock(pthread_mutex_t * mutex) {
+    struct ggml_wiiu_mutex * wrap = (struct ggml_wiiu_mutex *) (uintptr_t) *mutex;
+    if (wrap == NULL) {
+        return EINVAL;
+    }
+
+    OSLockMutex(&wrap->mutex);
+    return 0;
+}
+
+static int pthread_mutex_unlock(pthread_mutex_t * mutex) {
+    struct ggml_wiiu_mutex * wrap = (struct ggml_wiiu_mutex *) (uintptr_t) *mutex;
+    if (wrap == NULL) {
+        return EINVAL;
+    }
+
+    OSUnlockMutex(&wrap->mutex);
+    return 0;
+}
+
+static int pthread_cond_init(pthread_cond_t * cond, const void * attr) {
+    (void) attr;
+
+    struct ggml_wiiu_cond * wrap = malloc(sizeof(*wrap));
+    if (wrap == NULL) {
+        return ENOMEM;
+    }
+
+    memset(wrap, 0, sizeof(*wrap));
+    OSInitCond(&wrap->cond);
+
+    *cond = (pthread_cond_t) (uintptr_t) wrap;
+    return 0;
+}
+
+static int pthread_cond_destroy(pthread_cond_t * cond) {
+    struct ggml_wiiu_cond * wrap = (struct ggml_wiiu_cond *) (uintptr_t) *cond;
+    if (wrap) {
+        free(wrap);
+        *cond = 0;
+    }
+    return 0;
+}
+
+static int pthread_cond_wait(pthread_cond_t * cond, pthread_mutex_t * mutex) {
+    struct ggml_wiiu_cond *  cwrap = (struct ggml_wiiu_cond *) (uintptr_t) *cond;
+    struct ggml_wiiu_mutex * mwrap = (struct ggml_wiiu_mutex *) (uintptr_t) *mutex;
+
+    if (cwrap == NULL || mwrap == NULL) {
+        return EINVAL;
+    }
+
+    OSWaitCond(&cwrap->cond, &mwrap->mutex);
+    return 0;
+}
+
+static int pthread_cond_broadcast(pthread_cond_t * cond) {
+    struct ggml_wiiu_cond * wrap = (struct ggml_wiiu_cond *) (uintptr_t) *cond;
+    if (wrap == NULL) {
+        return EINVAL;
+    }
+
+    OSSignalCond(&wrap->cond);
+    return 0;
+}
+
+static int sched_yield (void) {
+    OSYieldThread();
+    return 0;
+}
 #else
 
 #include <pthread.h>

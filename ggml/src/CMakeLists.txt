@@ -348,6 +348,11 @@ function(ggml_add_cpu_backend_variant tag_name)
 endfunction()
 
 ggml_add_backend(CPU)
+if (TARGET ggml-cpu AND NOT GGML_BACKEND_DL)
+    # Explicitly ensure the main C++ CPU backend translation unit is compiled on platforms
+    # where it might be skipped by generator quirks.
+    target_sources(ggml-cpu PRIVATE ggml-cpu/ggml-cpu.cpp)
+endif()
 
 if (GGML_CPU_ALL_VARIANTS)
     if (NOT GGML_BACKEND_DL)

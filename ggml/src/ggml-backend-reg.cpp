@@ -16,6 +16,8 @@
 #        define NOMINMAX
 #    endif
 #    include <windows.h>
+#elif defined(__WIIU__)
+// dlfcn is not available on CafeOS; dynamic backend loading is disabled.
 #elif defined(__APPLE__)
 #    include <mach-o/dyld.h>
 #    include <dlfcn.h>
@@ -145,6 +147,27 @@ static void * dl_get_sym(dl_handle * handle, const char * name) {
 
 static const char * dl_error() {
     return "";
+}
+
+#elif defined(__WIIU__)
+
+using dl_handle = void;
+
+struct dl_handle_deleter {
+    void operator()(void *) {
+    }
+};
+
+static void * dl_load_library(const fs::path &) {
+    return nullptr;
+}
+
+static void * dl_get_sym(dl_handle *, const char *) {
+    return nullptr;
+}
+
+static const char * dl_error() {
+    return "dynamic loading is unavailable on CafeOS";
 }
 
 #else

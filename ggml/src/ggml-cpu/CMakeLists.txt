@@ -674,6 +674,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
     endif()
 
     message(STATUS "Adding CPU backend variant ${GGML_CPU_NAME}: ${ARCH_FLAGS} ${ARCH_DEFINITIONS}")
+    # Ensure the main C++ backend implementation is always part of the variant, even on uncommon platforms.
+    list(APPEND GGML_CPU_SOURCES ggml-cpu/ggml-cpu.cpp)
     target_sources(${GGML_CPU_NAME} PRIVATE ${GGML_CPU_SOURCES})
     target_compile_options(${GGML_CPU_NAME} PRIVATE ${ARCH_FLAGS})
     target_compile_definitions(${GGML_CPU_NAME} PRIVATE ${ARCH_DEFINITIONS})
